@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "hal/hal.h"
+#include "config.h"
 #include "hal/wifi/hal_wifi.h"
 #include "cal/cal_fetch.h"
 #include "cal/cal_model.h"
@@ -90,7 +91,7 @@ static_assert(TITLE_X + TITLE_W == MARGIN_R, "title column ends at the margin");
 // ---- not in the spec ----
 static constexpr int CAL_ROTATION    = 0;          // verify on glass: 0 or 2, whichever puts A,B,C left to right
 static constexpr int VENDOR_ROTATION = 3;          // Hal::init()'s; the portal QR path draws in that frame
-static constexpr int REFRESH_HOUR    = 4;          // same 04:00 as app_manager's DAILY_WAKE_HOUR
+static constexpr int REFRESH_HOUR    = CAL_WAKE_HOUR;   // config.h; the stale rule keys off the same hour
 static constexpr size_t FETCH_CAP    = 32 * 1024;  // the proxy answers < 16 KB for a normal fortnight
 
 static const char* const WEEKDAY[7] = {"SUNDAY",   "MONDAY", "TUESDAY", "WEDNESDAY",

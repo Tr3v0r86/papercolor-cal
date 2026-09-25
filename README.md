@@ -1,95 +1,115 @@
-# papercolor-cal
+# PaperColor Calendar
 
-Daily Google Calendar face for the M5Stack PaperColor (SKU C151, ESP32-S3R8, 400x600 Spectra 6).
-A private fork of [m5stack/M5PaperColor-UserDemo](https://github.com/m5stack/M5PaperColor-UserDemo)
-(remote `upstream`), stripped to the vendor HAL, the Wi-Fi config portal and one app: the calendar.
+A once-a-day Google Calendar for your fridge, on the M5Stack PaperColor (4" six-colour E Ink,
+ESP32-S3, 1250 mAh battery). It wakes itself at 04:00, fetches a two-week window of your
+calendars, draws today, and powers off completely. Three buttons walk the days. A 3D-printed
+magnetic cradle holds it on the door.
 
-## Build
+- **No OAuth on the device.** A ten-line Google Apps Script on your own account serves a compact
+  JSON window; the board does one HTTPS GET.
+- **Real battery life.** The board is not sleeping, it is off: the M5PM1 PMIC cuts the ESP32-S3
+  and the RX8130 RTC alarm powers it back on. Standby is the PMIC's own ~90 µA.
+- **Six colours, no dithering.** The face uses the panel's six exact primaries as flat fills and
+  1-bit fonts, so type stays crisp on Spectra 6.
 
-ESP-IDF v5.5.1 (the vendor's pin), beside v5.4, which the rest of esp-devwork uses.
+Built on M5Stack's own [M5PaperColor-UserDemo](https://github.com/m5stack/M5PaperColor-UserDemo)
+(ESP-IDF, M5GFX, M5Unified, M5PM1), keeping its HAL, power scheme and Wi-Fi setup portal, and
+replacing the photo apps with one calendar app.
 
-```bash
-git submodule update --init --recursive
-source ~/esp/esp-idf-v5.5.1/export.sh
-idf.py set-target esp32s3   # once
-idf.py build
-cd build && esptool.py --chip esp32s3 merge_bin -o ../dist/calendar-$(git rev-parse --short HEAD).bin @flash_args
+## What it shows
+
+400 × 600 portrait. A full-bleed band with the date as the hero (blue for today, green when you
+have walked to another day, with the word TODAY / TOMORROW / IN 3 DAYS), an all-day strip, a list
+of timed events with a colour tab per calendar, and a black-ink footer: battery, event count, and
+`UPDATED SAT 04:00`. The footer cell turns yellow when the last 04:00 refresh was missed, so a
+stale page is never mistaken for a fresh one.
+
+## Buttons
+
+| Button | Click | Hold |
+|---|---|---|
+| A (upper side) | day back | 5 s: Wi-Fi setup portal (QR code on the glass) |
+| B (lower side) | day forward | |
+| C (top) | refetch the calendar now, stay on this day | |
+| Power | on (or restart while on); double-click off | |
+
+Every power-on and the 04:00 wake show today. The LED is dim white while the board is busy
+(booting, fetching, refreshing) and off otherwise. The board powers off 60 s after the last press.
+
+## Setup
+
+You need: a PaperColor, a Google account, ESP-IDF **v5.5.1** (the vendor's pin), and 2.4 GHz
+Wi-Fi.
+
+1. **Deploy the calendar proxy.** Follow [tools/gcal-proxy/README.md](tools/gcal-proxy/README.md).
+   Five minutes in the Apps Script editor; you end up with a `/exec` URL.
+2. **Configure.** `cp main/secrets.h.example main/secrets.h` and paste the URL as `GCAL_URL`.
+   If you are not in UTC+7, set `CAL_UTC_OFFSET_S` in `main/config.h` and `TZ` in `Code.gs`.
+   `CAL_WAKE_HOUR` is the daily refresh hour.
+3. **Build and flash.**
+   ```bash
+   git clone --recursive https://github.com/Tr3v0r86/papercolor-cal.git
+   cd papercolor-cal
+   . ~/esp/esp-idf-v5.5.1/export.sh
+   idf.py set-target esp32s3
+   idf.py build
+   idf.py -p /dev/cu.usbmodemXXXX flash
+   ```
+   The board's USB port only exists while the ESP32 is powered, so press the power button first
+   and flash within the 60 s idle window. A full flash wipes the vendor settings; a rebuild after
+   that can be flashed app-only with `idf.py app-flash` and keeps them.
+4. **Join Wi-Fi.** After the first boot (the vendor's "Press to ON" screen, then power off), press
+   power, hold A for 5 s, scan the QR with your phone and enter your Wi-Fi in the portal.
+   Low-power mode is on by default in this build.
+5. **First fetch.** Press C. The board joins, syncs its clock from NTP, fetches, and redraws with
+   today's events. From then on it does this itself every morning.
+
+## How the day cycle works
+
+```
+04:00 RTC alarm -> M5PM1 powers the ESP32-S3 on
+  join Wi-Fi (APSTA, up to 3 attempts) -> SNTP -> write local time to the RTC
+  GET <GCAL_URL>?back=3&days=14  (follows the 302 to script.googleusercontent.com)
+  parse -> one NVS blob per day -> draw today -> arm tomorrow's alarm
+  deauth from the AP -> M5PM1 SYS_CMD_OFF
 ```
 
-Host tests: `make -C test/cal test` (the window parser, against the firmware's own
-`main/cal/cal_model.c`) and `cc test/next_wake_test.c -o /tmp/nw && /tmp/nw` (the 04:00 date maths).
+Two things that bit during bring-up and are handled: the alarm boot must bring the radio up the
+same way a normal boot does (STA-only never authenticated), and the board must deauth before
+cutting power or the router keeps the old association and ignores the next morning's auth.
 
-Partition table (16 MB flash): `nvs` 0x9000 +0x10000 (the day blobs), `phy_init` 0x19000 +0x1000,
-`factory` 0x20000 +0x9E0000, `storage` (FAT, unused by the calendar) 0xA00000 +0x600000.
+## Project layout
 
-## First flash (Trevor, in this order)
-
-Flashing is yours; agents only build. Each image is one file written at 0x0:
-`esptool.py --chip esp32s3 -p /dev/cu.usbmodemXXXX write_flash 0x0 dist/<image>.bin`.
-
-a. **Vanilla first, to prove the power scheme on this unit.** Flash `dist/vanilla-1ff998e.bin`
-   (the unmodified upstream build, 16 MiB). Hold A for 5 s, scan the QR, join the portal, set
-   Wi-Fi and turn **low-power ON**. Leave it alone: it must power off after 60 s idle, and the
-   power button must wake it.
-b. **Deploy the proxy.** Deploy `tools/gcal-proxy/Code.gs` per its README in esp-devwork (as
-   trevor.cardozo@gmail.com). `cp main/secrets.h.example main/secrets.h` and put the `/exec` URL
-   in `GCAL_URL`. Check it with `curl -sL "$GCAL_URL?ping=1"`.
-c. **Rebuild and flash the calendar.** Build as above, flash `dist/calendar-<sha>.bin`
-   (`dist/` is gitignored; `dist/calendar-071b8ef.bin` is the first build, from commit 071b8ef). **This wipes
-   NVS:** the merged image writes 0xFF over the whole nvs range (and nvs grew, so the vanilla
-   layout could not be reused anyway). Consequences, in order: the first boot shows the vendor
-   "Press to ON" guide, sets the clock to 2026-01-01 and powers off; press the power button.
-   Then hold A 5 s and set Wi-Fi again in the portal. Low-power mode now defaults ON, so only
-   Wi-Fi needs re-entering. The phone must join the AP within the 60 s idle window.
-d. **First face.** With the store empty the face shows the RTC's date (01 JANUARY 2026 until
-   SNTP lands) on the blue TODAY band, `NO CALENDAR DATA` in the list, and `NEVER UPDATED` on a
-   yellow cell. Long-press B (1.5 s) to fetch now: Wi-Fi, SNTP to the RTC, fetch, store, render.
-   The face should come back with today's events and an `UPDATED <day> <hh:mm>` cell on white.
-e. **What to check on glass.**
-   1. Orientation: the face upright with A, B, C reading left to right. If it is upside down,
-      set `CAL_ROTATION` to 2 in `main/apps/calendar/app_calendar.cpp` and rebuild.
-   2. Fringe: the fonts are 1 bit and dithering is off, so caps should show no green or yellow
-      speckle, including black on the yellow cell and white on the blue band.
-   3. Tabs: every event's 6 px colour tab is visible, yellow being the faintest.
-   4. Buttons: A and C walk the days and stop dead at the window edge (3 back, 13 ahead);
-      B returns to today. Each accepted press is one 15 to 30 s refresh.
-   5. The 04:00 wake next morning: the board powers itself on around 04:00, fetches, renders
-      and powers off; the footer then reads `UPDATED <that day> 04:00` on white.
-
-
-> **Stale-build trap:** `app_calendar.cpp` includes `secrets.h` through `__has_include`. If you create
-> or change `main/secrets.h` after a build, ninja does not know the object depends on it. Run
-> `touch main/apps/calendar/app_calendar.cpp` (or `idf.py fullclean`) before `idf.py build`, then confirm
-> with `strings -n 20 build/paper_color.bin | grep -c script.google.com`. Bitten live 2026-09-25.
-
-## Serial monitor
-
-```bash
-idf.py -p /dev/cu.usbmodemXXXX monitor --no-reset
+```
+main/apps/calendar/   app_calendar.{h,cpp}     the face, the daily cycle, day walking
+main/cal/             cal_model.{h,c}          window parser, plain C, host-tested
+                      cal_store.{h,cpp}        NVS: one blob per day + meta
+                      cal_fetch.{h,cpp}        esp_http_client, cert bundle, redirects
+main/apps/app_manager app_manager.cpp          buttons, idle power-off, alarm arming (vendor, trimmed)
+main/hal/             vendor HAL: M5PM1, RX8130, SHT40, Wi-Fi manager; next_wake.h added
+main/config.h         time zone offset, wake hour
+tools/gcal-proxy/     Code.gs + deploy README
+test/                 host tests: make -C test/cal test ; cc test/next_wake_test.c
+case/                 fridge cradle: STLs, STEP, CadQuery source, README
 ```
 
-The console is UART0 on GPIO5/4 with the USB-Serial/JTAG as the secondary console. `--no-reset`
-keeps the monitor from rebooting the board on attach (a reset boot is not an RTC-alarm boot).
-**When the M5PM1 powers the S3 off, the USB-Serial/JTAG device disappears** from the Mac
-entirely, and it reappears only when the power button or the 04:00 alarm powers the S3 again, so
-the monitor has to be re-attached after every power-off; the first lines of a wake are usually
-missed. To watch a whole cycle, turn low-power off in the portal while debugging.
+## The case
 
-## Secrets
+![Cradle](case/preview.png)
 
-`cp main/secrets.h.example main/secrets.h` and set `GCAL_URL` to the Apps Script web app URL.
-`main/secrets.h` is gitignored; without it the tree still builds (the URL is empty).
+Four 6 × 2 mm magnets, two fixed lower hooks, two M2 screw-down retainers. Print
+`case/papercolor-fridge-mount-v3-m2-plate.stl`. Details, hardware list and assembly in
+[case/README.md](case/README.md).
 
-## Power scheme
+## Status
 
-1. No ESP32 deep sleep: `M5PM1_SYS_CMD_OFF` cuts the S3 entirely; the power button or the RTC alarm powers it back on.
-2. Before powering off, the RX8130CE alarm is armed for the next 04:00 Asia/Bangkok (the RTC holds Bangkok local time, set from SNTP).
-3. Alarm boot: join Wi-Fi, SNTP to the RTC, fetch, render today, power off immediately.
-4. Any other boot: render today, then buttons walk the days (A prev, C next, B today, B hold 1.5 s = fetch now; A hold 5 s = Wi-Fi portal); power off after 60 s idle.
-5. Battery under 3100 mV: power off without rendering. Power-off and the alarm run only with low-power mode on (portal setting, default ON here; upstream defaults it off, which leaves the board awake forever).
+Running daily on one unit since 2026-09-26. Not yet measured: battery life off USB (estimate from
+the PMIC's 90 µA standby plus one ~45 s active cycle a day is months). Known rough edge: right
+after a full flash the vendor sets the clock to 2026-01-01, so the first face shows that date until
+the first fetch syncs it.
 
-## Docs
+## Credits and licence
 
-In the esp-devwork repo: `docs/adr/0014-papercolor-is-the-lane-on-the-vendor-base.md` (the decision)
-and `docs/superpowers/specs/2026-09-25-papercolor-calendar-design.md` (behaviour, data, face).
-
+MIT. The HAL, power scheme and Wi-Fi portal are M5Stack's (M5PaperColor-UserDemo). M5GFX and
+M5Unified are M5Stack's libraries, pulled in as submodules. The calendar app, data path, tests,
+face design and case are new in this repo.

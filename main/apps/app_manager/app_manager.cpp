@@ -5,6 +5,7 @@
  */
 #include "app_manager.h"
 #include "hal/hal.h"
+#include "config.h"
 #include "hal/wifi/hal_wifi.h"
 #include "hal/utils/audio/audio.h"
 #include "apps/app_server/app_server.h"
@@ -50,8 +51,8 @@ static bool g_refresh_in_progress                    = false;
 static constexpr uint32_t LOW_POWER_IDLE_SHUTDOWN_MS = 60000;
 
 // ---- Calendar ----
-static constexpr int DAILY_WAKE_HOUR           = 4;  // Asia/Bangkok, the RTC's time base
-static constexpr int DAILY_WAKE_MINUTE         = 0;
+static constexpr int DAILY_WAKE_HOUR           = CAL_WAKE_HOUR;    // config.h, local time
+static constexpr int DAILY_WAKE_MINUTE         = CAL_WAKE_MINUTE;
 static constexpr uint32_t BUTTON_LONG_PRESS_MS = 1500;
 static int g_day_offset                        = 0;  // not persisted: every fresh boot shows today
 
@@ -184,8 +185,8 @@ static bool should_idle_power_off_in_low_power_mode()
 }
 
 // Dim white while the board is busy (a press was accepted, or it is booting/fetching), off when the
-// refresh has reached the glass. Trevor, 2026-09-26: "button presses should give LED feedback so I
-// know it's powered on". This is the only LED use in the firmware; the vendor status task is gone.
+// refresh has reached the glass. Requested 2026-09-26: button presses should give LED feedback so you know it is
+// powered on. This is the only LED use in the firmware; the vendor status task is gone.
 static void led_busy(bool on)
 {
     M5.Led.setBrightness(on ? 25 : 0);
@@ -214,7 +215,7 @@ static void calendar_walk(int day_offset)
     }
 }
 
-// Refetch keeps the day being looked at (Trevor, 2026-09-26); the cycle itself falls back to today
+// Refetch keeps the day being looked at (2026-09-26); the cycle itself falls back to today
 // only if the refreshed window no longer holds it.
 static void calendar_cycle()
 {
@@ -476,7 +477,7 @@ static void app_task(void* param)
         }
 
         // ==================== Calendar verbs ====================
-        // Physical order on the unit (Trevor, 2026-09-26): C is the top button, A and B are the two
+        // Physical order on the unit (2026-09-26): C is the top button, A and B are the two
         // side buttons with A above B. A click = day back, B click = day forward, C click = refetch
         // the calendar and stay on the day being looked at. Every power-on and the 04:00 wake show
         // today again. A's 5 s hold (portal, above) is never a click: a release after the hold

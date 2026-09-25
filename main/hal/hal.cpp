@@ -184,7 +184,7 @@ void Hal::init()
         }
     }
 
-    // No status LED on a fridge poster (Trevor, 2026-09-26): the glass already shows a refresh in
+    // No status LED on a fridge poster (2026-09-26): the glass already shows a refresh in
     // progress, and the rainbow boot + blink patterns were noise plus battery. statusEventSend()
     // returns false on the null event group, so every caller is a no-op.
     M5.Led.setBrightness(0);

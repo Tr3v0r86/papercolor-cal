@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 #pragma once
+#include "config.h"
 
 #include <cstdint>
 #include <cstddef>
@@ -101,11 +102,11 @@ public:
     void detectWakeSource();
     /** @brief Configures the RTC wake pin. */
     bool configureRtcWakePin();
-    /** @brief Arms the RTC alarm for the next hour:minute local (Asia/Bangkok) after now. */
+    /** @brief Arms the RTC alarm for the next hour:minute local (config.h offset) after now. */
     bool scheduleNextWakeAt(int hour, int minute);
     /** Test hook: alarm `minutes` from the RTC's now. Used only by TEST_WAKE_IN_MIN builds. */
     bool scheduleNextWakeInMinutes(int minutes);
-    /** @brief Needs STA up. Sets the RTC to Asia/Bangkok local time from SNTP. */
+    /** @brief Needs STA up. Sets the RTC to local time (config.h offset) from SNTP. */
     bool syncRtcFromSntp(uint32_t timeout_ms);
     /** @brief Clears wake-related flags. */
     void clearWakeFlags();
@@ -132,8 +133,8 @@ private:
     static constexpr uint8_t RX8130_RAM_BASE        = 0x20;  // RAM start register address
     static constexpr uint8_t RX8130_RAM_SIZE        = 4;     // 4 bytes (0x20~0x23)
     static constexpr m5pm1_gpio_num_t RTC_WAKE_GPIO = M5PM1_GPIO_NUM_2;
-    // The RTC holds Asia/Bangkok wall time: UTC+7 fixed, Thailand has no DST.
-    static constexpr int RTC_UTC_OFFSET_S = 7 * 3600;
+    // The RTC holds local wall time at a fixed offset (config.h).
+    static constexpr int RTC_UTC_OFFSET_S = CAL_UTC_OFFSET_S;
     bool _is_rtc_wake_boot                          = false;
 
     typedef enum {
