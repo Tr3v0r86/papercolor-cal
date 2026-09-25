@@ -5,6 +5,7 @@ idf_component_register(
         "main.cpp"
         "apps/app_manager/app_manager.cpp"
         "apps/app_server/app_server.cpp"
+        "apps/calendar/app_calendar.cpp"
         "hal/storage/hal_storage.cpp"
         "hal/wifi/hal_wifi.cpp"
         "hal/hal.cpp"

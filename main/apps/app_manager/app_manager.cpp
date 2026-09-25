@@ -8,6 +8,7 @@
 #include "hal/wifi/hal_wifi.h"
 #include "hal/utils/audio/audio.h"
 #include "apps/app_server/app_server.h"
+#include "apps/calendar/app_calendar.h"
 #include "esp_log.h"
 #include <esp_timer.h>
 #include "nvs_flash.h"
@@ -47,6 +48,12 @@ static bool g_ap_auto_off_timer_running = false;
 static uint32_t g_low_power_last_activity_ms         = 0;
 static bool g_refresh_in_progress                    = false;
 static constexpr uint32_t LOW_POWER_IDLE_SHUTDOWN_MS = 60000;
+
+// ---- Calendar ----
+static constexpr int DAILY_WAKE_HOUR           = 4;  // Asia/Bangkok, the RTC's time base
+static constexpr int DAILY_WAKE_MINUTE         = 0;
+static constexpr uint32_t BUTTON_LONG_PRESS_MS = 1500;
+static int g_day_offset                        = 0;  // not persisted: every fresh boot shows today
 
 // ---- millis() ----
 static inline uint32_t millis_()
@@ -113,7 +120,7 @@ static bool prepare_next_low_power_wake()
         ESP_LOGW(g_tag, "Failed to configure RTC wake pin");
         return false;
     }
-    if (!hal.scheduleNextWakeMinutes(24 * 60)) {
+    if (!hal.scheduleNextWakeAt(DAILY_WAKE_HOUR, DAILY_WAKE_MINUTE)) {
         ESP_LOGW(g_tag, "Failed to schedule next RTC wake");
         return false;
     }
@@ -169,6 +176,24 @@ static bool should_idle_power_off_in_low_power_mode()
     }
 
     return now - g_low_power_last_activity_ms >= LOW_POWER_IDLE_SHUTDOWN_MS;
+}
+
+static void calendar_show(int day_offset)
+{
+    g_day_offset = day_offset;
+    app_manager_set_refresh_in_progress(true);
+    app_calendar_render(g_day_offset);
+    app_manager_set_refresh_in_progress(false);
+    app_manager_mark_activity();
+}
+
+static void calendar_cycle()
+{
+    g_day_offset = 0;
+    app_manager_set_refresh_in_progress(true);
+    app_calendar_daily_cycle();
+    app_manager_set_refresh_in_progress(false);
+    app_manager_mark_activity();
 }
 
 static void shutdown_after_low_power_cycle()
@@ -414,6 +439,20 @@ static void app_task(void* param)
             }
         }
 
+        // ==================== Calendar verbs ====================
+        // A click = previous day, C click = next day, B click = today, B hold >= 1.5 s = fetch now.
+        // A's 5 s hold (portal, above) is never a click: a release after the hold threshold is not one.
+        // ponytail: no window-edge clamp yet; it needs the stored window from main/cal.
+        if (M5.BtnA.wasClicked()) {
+            calendar_show(g_day_offset - 1);
+        } else if (M5.BtnC.wasClicked()) {
+            calendar_show(g_day_offset + 1);
+        } else if (M5.BtnB.wasClicked()) {
+            calendar_show(0);
+        } else if (M5.BtnB.wasHold()) {
+            calendar_cycle();
+        }
+
         // ==================== WiFi AP auto-off ====================
 #if WIFI_AP_AUTO_OFF_ENABLE
         {
@@ -486,12 +525,21 @@ esp_err_t app_manager_start()
         }
     }
 
+    M5.BtnA.setHoldThresh(BUTTON_LONG_PRESS_MS);
+    M5.BtnB.setHoldThresh(BUTTON_LONG_PRESS_MS);
+    M5.BtnC.setHoldThresh(BUTTON_LONG_PRESS_MS);
+
     if (hal.isRtcWakeBoot()) {
+        app_calendar_daily_cycle();
         shutdown_after_low_power_cycle();  // returns only if low-power mode is off; fall through to idle
     }
 
     ESP_ERROR_CHECK(WiFi.begin());
     ESP_ERROR_CHECK(ensure_apsta_started());
+
+    if (!hal.isRtcWakeBoot()) {
+        calendar_show(0);
+    }
 
     xTaskCreate(app_task, "app_mgr", 10240, NULL, 5, NULL);
     return ESP_OK;

@@ -18,6 +18,8 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "freertos/semphr.h"
+#include "esp_netif_sntp.h"
+#include "next_wake.h"
 
 using namespace hal_wifi;
 
@@ -218,24 +220,33 @@ bool Hal::configureRtcWakePin()
     return true;
 }
 
-bool Hal::scheduleNextWakeMinutes(int interval_minutes)
+bool Hal::scheduleNextWakeAt(int hour, int minute)
 {
-    if (interval_minutes <= 0) return false;
+    // RX8130 alarm matches minute + hour + day-of-month, so the date must be the real next one.
+    m5::rtc_datetime_t now;
+    if (!M5.Rtc.getDateTime(&now)) return false;
+    struct tm next = next_wake_at(now.get_tm(), hour, minute);
+    ESP_LOGI(TAG, "Next RTC wake %04d-%02d-%02d %02d:%02d local", next.tm_year + 1900, next.tm_mon + 1, next.tm_mday,
+             next.tm_hour, next.tm_min);
+    return M5.Rtc.setAlarmIRQ(&next) > 0;
+}
 
-    m5::rtc_date_t date;
-    m5::rtc_time_t time;
-    if (!M5.Rtc.getDateTime(&date, &time)) return false;
-
-    struct tm tm_now = {};
-    tm_now.tm_year   = date.year + 100;
-    tm_now.tm_mon    = date.month - 1;
-    tm_now.tm_mday   = date.date;
-    tm_now.tm_hour   = time.hours;
-    tm_now.tm_min    = time.minutes + interval_minutes;
-    tm_now.tm_sec    = time.seconds;
-    if (mktime(&tm_now) < 0) return false;
-
-    if (M5.Rtc.setAlarmIRQ(&tm_now) <= 0) return false;
+bool Hal::syncRtcFromSntp(uint32_t timeout_ms)
+{
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    if (esp_netif_sntp_init(&cfg) != ESP_OK) return false;
+    bool synced = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(timeout_ms)) == ESP_OK;
+    esp_netif_sntp_deinit();
+    if (!synced) {
+        ESP_LOGW(TAG, "SNTP sync timed out, RTC left as is");
+        return false;
+    }
+    time_t local = time(nullptr) + RTC_UTC_OFFSET_S;
+    struct tm t;
+    gmtime_r(&local, &t);
+    M5.Rtc.setDateTime(&t);
+    ESP_LOGI(TAG, "RTC set from SNTP: %04d-%02d-%02d %02d:%02d local", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+             t.tm_hour, t.tm_min);
     return true;
 }
 

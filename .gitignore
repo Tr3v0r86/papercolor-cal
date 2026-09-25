@@ -79,3 +79,6 @@ Desktop.ini
 # Visual Studio Code
 .vscode/
 .cache/
+
+# Calendar secrets (template: main/secrets.h.example)
+main/secrets.h
