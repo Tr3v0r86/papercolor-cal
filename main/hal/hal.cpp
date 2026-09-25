@@ -184,8 +184,11 @@ void Hal::init()
         }
     }
 
-    _led_status_indicate_event_group = xEventGroupCreate();
-    xTaskCreate(LedStatusIndicateTask, "LedStatusIndicateTask", 4096, this, 5, &_led_status_indicate_task_handle);
+    // No status LED on a fridge poster (Trevor, 2026-09-26): the glass already shows a refresh in
+    // progress, and the rainbow boot + blink patterns were noise plus battery. statusEventSend()
+    // returns false on the null event group, so every caller is a no-op.
+    M5.Led.setBrightness(0);
+    M5.Led.display();
     _settings_mutex = xSemaphoreCreateMutex();
 }
 
