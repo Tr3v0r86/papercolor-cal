@@ -8,4 +8,3 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # "Trim" the build. Include the minimal set of components, main, and anything it depends on.
 
 project(paper_color)
-  fatfs_create_spiflash_image(storage main/apps/local_photo_slideshow/images FLASH_IN_PROJECT)

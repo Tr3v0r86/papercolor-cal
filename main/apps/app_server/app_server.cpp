@@ -21,22 +21,15 @@
 #include "esp_http_server.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
-#include "esp_vfs_fat.h"
-#include "tinyusb_msc.h"
 
 #include "hal/wifi/hal_wifi.h"
 #include "hal/storage/hal_storage.h"
-#include "apps/local_photo_slideshow/local_photo_slideshow.h"
-#include "apps/ezdata_photo_push/ezdata_photo_push.h"
 #include "hal/utils/dns_server/dns_server.h"
 #include "hal/hal.h"
 #include "mdns.h"
 #include "apps/app_manager/app_manager.h"
-#include "hal/ezdata/hal_ezdata.h"
 
 using namespace hal_wifi;
-
-extern PhotoSlideshow photo_slideshow;
 
 #define TAG "app_server"
 
@@ -54,20 +47,11 @@ extern const char _binary_index_html_end[] asm("_binary_index_html_end");
 
 #define SCAN_TIMEOUT_MS    (8000)
 #define CONNECT_TIMEOUT_MS (15000)
-#define UPLOAD_MAX_SIZE    (2 * 1024 * 1024)
-#define PHOTOS_PER_PAGE    (16)
-#define MAX_PHOTOS         (500)
 
 /* ==== Static state ==== */
 static httpd_handle_t g_srv         = NULL;
 static wifi_network_t *g_scan_cache = NULL;
 static int g_scan_n                 = 0;
-
-typedef struct {
-    char name[64];
-    char url[320];
-    size_t size;
-} photo_entry_t;
 
 static device_state_t g_dev_state = {0};
 
@@ -79,7 +63,7 @@ static const struct {
     {MODE_ID_EZDATA, "INTERNET"},
 };
 
-static const char *get_mime(const char *path)
+[[maybe_unused]] static const char *get_mime(const char *path)
 {
     const char *d = strrchr(path, '.');
     if (!d) {
@@ -110,97 +94,6 @@ static const char *get_mime(const char *path)
         return "application/javascript";
     }
     return "application/octet-stream";
-}
-
-static bool is_image_file(const char *name)
-{
-    const char *d = strrchr(name, '.');
-    if (!d) {
-        return false;
-    }
-    const char *ext[] = {"png", "jpg", "jpeg", "bmp", "webp", "gif", NULL};
-    for (int i = 0; ext[i]; i++) {
-        if (strcasecmp(d + 1, ext[i]) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool url_encode_component(const char *src, char *dst, size_t dst_sz)
-{
-    static const char hex[] = "0123456789ABCDEF";
-    size_t j                = 0;
-
-    if (!src || !dst || dst_sz == 0) {
-        return false;
-    }
-
-    for (size_t i = 0; src[i]; i++) {
-        unsigned char c = (unsigned char)src[i];
-
-        bool safe = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
-                    c == '_' || c == '.' || c == '~';
-
-        if (safe) {
-            if (j + 1 >= dst_sz) {
-                return false;
-            }
-            dst[j++] = (char)c;
-        } else {
-            if (j + 3 >= dst_sz) {
-                return false;
-            }
-            dst[j++] = '%';
-            dst[j++] = hex[(c >> 4) & 0x0F];
-            dst[j++] = hex[c & 0x0F];
-        }
-    }
-
-    dst[j] = 0;
-    return true;
-}
-
-static bool url_decode_component(const char *src, char *dst, size_t dst_sz)
-{
-    size_t j = 0;
-
-    if (!src || !dst || dst_sz == 0) {
-        return false;
-    }
-
-    for (size_t i = 0; src[i]; i++) {
-        unsigned char c = (unsigned char)src[i];
-        if (c == '%') {
-            if (!src[i + 1] || !src[i + 2]) {
-                return false;
-            }
-            char hex[3] = {src[i + 1], src[i + 2], 0};
-            char *end   = NULL;
-            long value  = strtol(hex, &end, 16);
-            if (end != hex + 2) {
-                return false;
-            }
-            if (j + 1 >= dst_sz) {
-                return false;
-            }
-            dst[j++] = (char)value;
-            i += 2;
-        } else if (c == '+') {
-            if (j + 1 >= dst_sz) {
-                return false;
-            }
-            dst[j++] = ' ';
-        } else {
-            if (j + 1 >= dst_sz) {
-                return false;
-            }
-            dst[j++] = (char)c;
-        }
-    }
-
-    dst[j] = 0;
-    return true;
 }
 
 static void send_json_response(httpd_req_t *req, cJSON *root)
@@ -239,7 +132,7 @@ static esp_err_t send_error_response(httpd_req_t *req, int code, const char *msg
     return ESP_FAIL;
 }
 
-static esp_err_t send_file_response(httpd_req_t *req, const char *path)
+[[maybe_unused]] static esp_err_t send_file_response(httpd_req_t *req, const char *path)
 {
     hal_storage_lock();
     FILE *f = fopen(path, "rb");
@@ -272,42 +165,11 @@ static esp_err_t send_file_response(httpd_req_t *req, const char *path)
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
-/* ==== Image naming (image001.jpg … image999.jpg) ==== */
-static esp_err_t generate_next_photo_name(const char *ext, const char *algorithm, char *out, size_t sz)
-{
-    char prefix     = (algorithm && strcmp(algorithm, "nearest") == 0) ? 'N' : 'd';
-    bool used[1000] = {0};
-    DIR *d          = opendir(BASE_PATH);
-    if (d) {
-        struct dirent *e;
-        while ((e = readdir(d)) != NULL) {
-            unsigned n;
-            char pf;
-            if (e->d_type == DT_REG && sscanf(e->d_name, "image%c%3u", &pf, &n) == 2 && pf == prefix) {
-                used[n] = true;
-            }
-        }
-        closedir(d);
-    }
-    for (unsigned n = 1; n <= 999; n++) {
-        if (!used[n]) {
-            snprintf(out, sz, "image%c%03u.%s", prefix, n, ext);
-            return ESP_OK;
-        }
-    }
-    return ESP_FAIL;
-}
-
 /* ==== WiFi (via hal_wifi library) ==== */
 static int perform_wifi_scan(void)
 {
-    // Pause auto-reconnect to avoid scan contention causing esp_wifi_scan_start to fail
-    app_manager_pause_wifi_reconnect();
-
     std::vector<hal_wifi::WiFiScanResult> results;
     esp_err_t err = WiFi.scanNetworks(results, false, SCAN_TIMEOUT_MS);
-
-    app_manager_resume_wifi_reconnect();
 
     if (err != ESP_OK) {
         return -1;
@@ -374,14 +236,10 @@ static void app_server_set_connect_failed_state(const char *message)
 
 static int perform_wifi_connect(const char *ssid, const char *pass)
 {
-    // Pause auto-reconnect to avoid connection contention
-    app_manager_pause_wifi_reconnect();
     WiFi.disconnect();
     vTaskDelay(pdMS_TO_TICKS(200));
 
     esp_err_t err = WiFi.connect(ssid, pass ? pass : "", CONNECT_TIMEOUT_MS);
-
-    app_manager_resume_wifi_reconnect();
 
     if (err == ESP_OK) {
         app_server_clear_connecting_state();
@@ -526,10 +384,6 @@ static esp_err_t h_wifi_config(httpd_req_t *req)
     }
 
     if (mode_buf[0]) {
-        esp_err_t mode_err = app_manager_apply_mode(mode_buf);
-        if (mode_err != ESP_OK) {
-            return send_error_response(req, 500, "mode switch failed");
-        }
         app_server_set_mode_state(mode_buf);
     }
 
@@ -663,365 +517,6 @@ static esp_err_t h_wifi_disconnect(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t h_photos_list(httpd_req_t *req)
-{
-    int page = 1, per = PHOTOS_PER_PAGE;
-    char query_buffer[64];
-    if (httpd_req_get_url_query_str(req, query_buffer, sizeof(query_buffer)) == ESP_OK) {
-        char page_buffer[16];
-        if (httpd_query_key_value(query_buffer, "page", page_buffer, sizeof(page_buffer)) == ESP_OK) {
-            int page_value = atoi(page_buffer);
-            if (page_value >= 1) {
-                page = page_value;
-            }
-        }
-        if (httpd_query_key_value(query_buffer, "per_page", page_buffer, sizeof(page_buffer)) == ESP_OK) {
-            int per_page_value = atoi(page_buffer);
-            if (per_page_value >= 1) {
-                per = per_page_value;
-            }
-        }
-    }
-
-    photo_entry_t *photos = (photo_entry_t *)calloc(MAX_PHOTOS, sizeof(photo_entry_t));
-    if (!photos) {
-        return send_error_response(req, 500, "oom");
-    }
-
-    int total = 0;
-    hal_storage_prepare_photo_fs_access();
-    hal_storage_lock();
-    DIR *directory = opendir(BASE_PATH);
-    if (directory) {
-        struct dirent *entry;
-        while ((entry = readdir(directory)) != NULL && total < MAX_PHOTOS) {
-            if (entry->d_type != DT_REG || !is_image_file(entry->d_name)) {
-                continue;
-            }
-            char file_path[PATH_MAX];
-            snprintf(file_path, sizeof(file_path), "%s/%s", BASE_PATH, entry->d_name);
-            struct stat st;
-            if (stat(file_path, &st) != 0) {
-                continue;
-            }
-            strlcpy(photos[total].name, entry->d_name, sizeof(photos[total].name));
-            char encoded_name[sizeof(photos[total].url) - sizeof("/data/")] = {0};
-            if (!url_encode_component(entry->d_name, encoded_name, sizeof(encoded_name))) {
-                continue;
-            }
-            if (snprintf(photos[total].url, sizeof(photos[total].url), "/data/%s", encoded_name) >=
-                (int)sizeof(photos[total].url)) {
-                continue;
-            }
-            photos[total].size = st.st_size;
-            total++;
-        }
-        closedir(directory);
-    }
-    hal_storage_unlock();
-
-    for (int i = 1; i < total; i++) {
-        photo_entry_t current_photo = photos[i];
-        int insert_index            = i - 1;
-        while (insert_index >= 0 && strcmp(photos[insert_index].name, current_photo.name) > 0) {
-            photos[insert_index + 1] = photos[insert_index];
-            insert_index--;
-        }
-        photos[insert_index + 1] = current_photo;
-    }
-
-    int pages = total > 0 ? (total + per - 1) / per : 1;
-    if (page > pages) {
-        page = pages;
-    }
-    int start = (page - 1) * per;
-    int end   = start + per;
-    if (end > total) {
-        end = total;
-    }
-
-    cJSON *r = cJSON_CreateObject();
-    cJSON *a = cJSON_AddArrayToObject(r, "photos");
-    for (int i = start; i < end; i++) {
-        cJSON *p = cJSON_CreateObject();
-        cJSON_AddStringToObject(p, "name", photos[i].name);
-        cJSON_AddStringToObject(p, "url", photos[i].url);
-        cJSON_AddNumberToObject(p, "size", (double)photos[i].size);
-        cJSON_AddItemToArray(a, p);
-    }
-    cJSON_AddNumberToObject(r, "total", total);
-    cJSON_AddNumberToObject(r, "page", page);
-    cJSON_AddNumberToObject(r, "per_page", per);
-    cJSON_AddNumberToObject(r, "total_pages", pages);
-    send_json_response(req, r);
-    cJSON_Delete(r);
-    free(photos);
-    return ESP_OK;
-}
-
-static esp_err_t h_photos_upload(httpd_req_t *req)
-{
-    if (req->content_len > UPLOAD_MAX_SIZE) {
-        return send_error_response(req, 400, "file too large");
-    }
-
-    char *body = (char *)malloc(req->content_len + 1);
-    if (!body) {
-        return send_error_response(req, 500, "oom");
-    }
-    size_t left = req->content_len, off = 0;
-    while (left > 0) {
-        int ret = httpd_req_recv(req, body + off, left);
-        if (ret <= 0) {
-            free(body);
-            return send_error_response(req, 500, "read err");
-        }
-        off += ret;
-        left -= ret;
-    }
-    body[off] = 0;
-
-    char ct[256];
-    const char *p = NULL;
-    if (httpd_req_get_hdr_value_str(req, "Content-Type", ct, sizeof(ct)) == ESP_OK) {
-        p = strstr(ct, "boundary=");
-    }
-    if (!p) {
-        free(body);
-        return send_error_response(req, 400, "no boundary");
-    }
-    p += 9;
-    if (*p == '"') {
-        p++;
-    }
-    char bd[128];
-    int bi = 0;
-    while (*p && *p != ' ' && *p != ';' && *p != '"' && bi < (int)sizeof(bd) - 1) {
-        bd[bi++] = *p++;
-    }
-    bd[bi] = 0;
-
-    char bd_marker[132];
-    snprintf(bd_marker, sizeof(bd_marker), "--%s", bd);
-    char bd_sep[136];
-    snprintf(bd_sep, sizeof(bd_sep), "\r\n--%s", bd);
-    size_t bdl  = strlen(bd_marker);
-    size_t bdsl = strlen(bd_sep);
-
-    auto mem_find = [&](const char *hay, size_t hlen, const char *needle, size_t nlen) -> const char * {
-        if (nlen > hlen) {
-            return NULL;
-        }
-        for (size_t i = 0; i <= hlen - nlen; i++) {
-            if (memcmp(hay + i, needle, nlen) == 0) {
-                return hay + i;
-            }
-        }
-        return NULL;
-    };
-
-    const char *filedata = NULL, *orig_fn = NULL;
-    size_t flen        = 0;
-    char action[32]    = "upload_only";
-    char algorithm[16] = "dither";
-    const char *pos = body, *end = body + off;
-    while (pos < end) {
-        size_t remaining = end - pos;
-        const char *s    = mem_find(pos, remaining, bd_marker, bdl);
-        if (!s) {
-            break;
-        }
-        const char *part = s + bdl;
-        remaining        = end - part;
-        if (remaining >= 2 && *part == '\r' && *(part + 1) == '\n') {
-            part += 2;
-            remaining -= 2;
-        } else if (remaining >= 2 && *part == '-' && *(part + 1) == '-') {
-            break;
-        }
-
-        const char *hdr_end = mem_find(part, remaining, "\r\n\r\n", 4);
-        if (!hdr_end) {
-            break;
-        }
-        hdr_end += 4;
-        remaining = end - hdr_end;
-
-        const char *next = NULL;
-        {
-            const char *sp = hdr_end;
-            size_t sr      = remaining;
-            while (sp < end) {
-                sp = mem_find(sp, sr, bd_sep, bdsl);
-                if (!sp) {
-                    break;
-                }
-                next = sp + 2;
-                break;
-            }
-        }
-
-        const char *val_end = next ? next : end;
-        while (val_end > hdr_end && (val_end[-1] == '\n' || val_end[-1] == '\r')) {
-            val_end--;
-        }
-        size_t vlen = val_end - hdr_end;
-
-        if (mem_find(part, hdr_end - part, "name=\"file\"", 11) && mem_find(part, hdr_end - part, "filename=\"", 10)) {
-            const char *fn_s = mem_find(part, hdr_end - part, "filename=\"", 10);
-            if (fn_s) {
-                fn_s += 10;
-                const char *fn_e = (const char *)memchr(fn_s, '"', hdr_end - fn_s);
-                if (fn_e) {
-                    char fnbuf[128];
-                    size_t fnl = fn_e - fn_s;
-                    if (fnl >= sizeof(fnbuf)) {
-                        fnl = sizeof(fnbuf) - 1;
-                    }
-                    memcpy(fnbuf, fn_s, fnl);
-                    fnbuf[fnl] = 0;
-                    orig_fn    = fnbuf;
-                }
-            }
-            filedata = hdr_end;
-            flen     = vlen;
-        } else if (mem_find(part, hdr_end - part, "name=\"action\"", 13)) {
-            if (vlen >= sizeof(action)) {
-                vlen = sizeof(action) - 1;
-            }
-            memcpy(action, hdr_end, vlen);
-            action[vlen] = 0;
-        } else if (mem_find(part, hdr_end - part, "name=\"algorithm\"", 16)) {
-            if (vlen >= sizeof(algorithm)) {
-                vlen = sizeof(algorithm) - 1;
-            }
-            memcpy(algorithm, hdr_end, vlen);
-            algorithm[vlen] = 0;
-        }
-        pos = next ? next : end;
-    }
-
-    if (!filedata || flen == 0) {
-        free(body);
-        return send_error_response(req, 400, "no file");
-    }
-
-    char ext[16];
-    if (orig_fn && *orig_fn) {
-        const char *dot = strrchr(orig_fn, '.');
-        if (dot) {
-            const char *e = dot + 1;
-            int ei        = 0;
-            while (*e && ei < 15) {
-                ext[ei++] = (*e >= 'A' && *e <= 'Z') ? *e + 32 : *e;
-                e++;
-            }
-            ext[ei] = 0;
-            if (strcmp(ext, "jpeg") == 0) strcpy(ext, "jpg");
-        } else {
-            strcpy(ext, "jpg");
-        }
-    } else {
-        strcpy(ext, "jpg");
-    }
-
-    char fname[64];
-    hal_storage_prepare_photo_fs_access();
-    hal_storage_lock();
-    if (generate_next_photo_name(ext, algorithm, fname, sizeof(fname)) != ESP_OK) {
-        hal_storage_unlock();
-        free(body);
-        return send_error_response(req, 500, "name gen fail");
-    }
-
-    char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", BASE_PATH, fname);
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        hal_storage_unlock();
-        free(body);
-        return send_error_response(req, 500, "write fail");
-    }
-    fwrite(filedata, 1, flen, f);
-    fclose(f);
-    hal_storage_unlock();
-
-    cJSON *r = cJSON_CreateObject();
-    cJSON_AddStringToObject(r, "status", "ok");
-    cJSON_AddStringToObject(r, "name", fname);
-
-    if (strcmp(action, "upload_display") == 0) {
-        photo_slideshow.displayPhotoByPath(path);
-        strlcpy(g_dev_state.current_image, fname, sizeof(g_dev_state.current_image));
-        cJSON_AddStringToObject(r, "displaying", fname);
-    }
-
-    send_json_response(req, r);
-    cJSON_Delete(r);
-    free(body);
-    return ESP_OK;
-}
-
-static esp_err_t h_photos_delete(httpd_req_t *req)
-{
-    char query_buffer[128];
-    if (httpd_req_get_url_query_str(req, query_buffer, sizeof(query_buffer)) != ESP_OK) {
-        return send_error_response(req, 400, "name required");
-    }
-    char name[64];
-    if (httpd_query_key_value(query_buffer, "name", name, sizeof(name)) != ESP_OK) {
-        return send_error_response(req, 400, "name required");
-    }
-
-    char decoded_name[64];
-    if (!url_decode_component(name, decoded_name, sizeof(decoded_name))) {
-        return send_error_response(req, 400, "invalid name");
-    }
-    if (strstr(decoded_name, "..") || strchr(decoded_name, '/') || strchr(decoded_name, '\\')) {
-        return send_error_response(req, 403, "invalid path");
-    }
-
-    char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", BASE_PATH, decoded_name);
-    hal_storage_prepare_photo_fs_access();
-    hal_storage_lock();
-    int rc = unlink(path);
-    hal_storage_unlock();
-    if (rc != 0) {
-        return send_error_response(req, 404, "not found");
-    }
-
-    cJSON *r = cJSON_CreateObject();
-    cJSON_AddStringToObject(r, "status", "deleted");
-    send_json_response(req, r);
-    cJSON_Delete(r);
-    return ESP_OK;
-}
-
-static esp_err_t h_storage(httpd_req_t *req)
-{
-    uint64_t total = 0;
-    uint64_t free  = 0;
-    uint64_t used  = 0;
-
-    hal_storage_prepare_photo_fs_access();
-    if (esp_vfs_fat_info(BASE_PATH, &total, &free) == ESP_OK) {
-        used = total - free;
-    } else {
-        ESP_LOGW(TAG, "esp_vfs_fat_info failed");
-    }
-
-    cJSON *r = cJSON_CreateObject();
-    cJSON_AddNumberToObject(r, "total", (double)total);
-    cJSON_AddNumberToObject(r, "used", (double)used);
-    cJSON_AddNumberToObject(r, "free", (double)free);
-
-    send_json_response(req, r);
-    cJSON_Delete(r);
-
-    return ESP_OK;
-}
-
 static esp_err_t h_battery(httpd_req_t *req)
 {
     uint16_t mv = 0;
@@ -1045,8 +540,6 @@ static esp_err_t h_mode_cfg_get(httpd_req_t *req)
 {
     cJSON *r = cJSON_CreateObject();
     cJSON_AddStringToObject(r, "orientation", hal.settings.rotation == 0 ? "landscape" : "portrait");
-    cJSON_AddBoolToObject(r, "auto_slideshow", hal.settings.auto_slideshow);
-    cJSON_AddNumberToObject(r, "interval_minutes", hal.settings.interval_minutes);
     cJSON_AddBoolToObject(r, "low_power_mode", hal.settings.low_power_mode);
     send_json_response(req, r);
     cJSON_Delete(r);
@@ -1067,8 +560,6 @@ static esp_err_t h_mode_cfg_set(httpd_req_t *req)
     }
 
     bool orientation_changed = false;
-    bool slideshow_changed   = false;
-    bool interval_changed    = false;
     bool low_power_changed   = false;
 
     hal.settingsLock();
@@ -1081,17 +572,6 @@ static esp_err_t h_mode_cfg_set(httpd_req_t *req)
             orientation_changed   = true;
         }
     }
-    value_item = cJSON_GetObjectItem(j, "auto_slideshow");
-    if (cJSON_IsBool(value_item) && (cJSON_IsTrue(value_item) != hal.settings.auto_slideshow)) {
-        hal.settings.auto_slideshow = cJSON_IsTrue(value_item);
-        slideshow_changed           = true;
-    }
-    value_item = cJSON_GetObjectItem(j, "interval_minutes");
-    if (cJSON_IsNumber(value_item) && value_item->valueint >= 1 &&
-        value_item->valueint != hal.settings.interval_minutes) {
-        hal.settings.interval_minutes = value_item->valueint;
-        interval_changed              = true;
-    }
     value_item = cJSON_GetObjectItem(j, "low_power_mode");
     if (cJSON_IsBool(value_item) && (cJSON_IsTrue(value_item) != hal.settings.low_power_mode)) {
         hal.settings.low_power_mode = cJSON_IsTrue(value_item);
@@ -1099,12 +579,8 @@ static esp_err_t h_mode_cfg_set(httpd_req_t *req)
     }
 
     char orientation_response[16];
-    bool slideshow_response;
-    int interval_response;
     bool low_power_response;
     strlcpy(orientation_response, hal.settings.rotation == 0 ? "landscape" : "portrait", sizeof(orientation_response));
-    slideshow_response = hal.settings.auto_slideshow;
-    interval_response  = hal.settings.interval_minutes;
     low_power_response = hal.settings.low_power_mode;
     hal.settingsUnlock();
     cJSON_Delete(j);
@@ -1112,20 +588,12 @@ static esp_err_t h_mode_cfg_set(httpd_req_t *req)
     if (orientation_changed) {
         hal.settingsSave(SETTING_ROTATION);
     }
-    if (slideshow_changed) {
-        hal.settingsSave(SETTING_AUTO_SLIDESHOW);
-    }
-    if (interval_changed) {
-        hal.settingsSave(SETTING_INTERVAL);
-    }
     if (low_power_changed) {
         hal.settingsSave(SETTING_LOW_POWER_MODE);
     }
 
     cJSON *r = cJSON_CreateObject();
     cJSON_AddStringToObject(r, "orientation", orientation_response);
-    cJSON_AddBoolToObject(r, "auto_slideshow", slideshow_response);
-    cJSON_AddNumberToObject(r, "interval_minutes", interval_response);
     cJSON_AddBoolToObject(r, "low_power_mode", low_power_response);
     send_json_response(req, r);
     cJSON_Delete(r);
@@ -1136,13 +604,8 @@ static esp_err_t h_mode2_cfg_get(httpd_req_t *req)
 {
     cJSON *r = cJSON_CreateObject();
     cJSON_AddStringToObject(r, "orientation", hal.settings.rotation == 0 ? "landscape" : "portrait");
-    cJSON_AddBoolToObject(r, "auto_slideshow", hal.settings.auto_slideshow);
-    cJSON_AddNumberToObject(r, "interval_minutes", hal.settings.interval_minutes);
     cJSON_AddBoolToObject(r, "low_power_mode", hal.settings.low_power_mode);
-
-    // EzData connection status
-    cJSON_AddBoolToObject(r, "connected", ezdata_is_connected());
-    cJSON_AddStringToObject(r, "device_token", hal.device_token.c_str());
+    cJSON_AddBoolToObject(r, "connected", WiFi.isConnected());
 
     send_json_response(req, r);
     cJSON_Delete(r);
@@ -1174,12 +637,6 @@ static esp_err_t h_mode_switch(httpd_req_t *req)
         return send_error_response(req, 400, "invalid mode");
     }
 
-    esp_err_t err = app_manager_apply_mode(normalized_mode);
-    if (err != ESP_OK) {
-        cJSON_Delete(j);
-        return send_error_response(req, 500, "mode switch failed");
-    }
-
     app_server_set_mode_state(normalized_mode);
 
     cJSON *r = cJSON_CreateObject();
@@ -1188,80 +645,6 @@ static esp_err_t h_mode_switch(httpd_req_t *req)
     send_json_response(req, r);
     cJSON_Delete(r);
     cJSON_Delete(j);
-    return ESP_OK;
-}
-
-static esp_err_t h_data_serve(httpd_req_t *req)
-{
-    const char *fp = req->uri + 6; /* Skip "/data/" */
-    if (!*fp || strstr(fp, "..")) {
-        return send_error_response(req, 404, "not found");
-    }
-
-    char decoded[PATH_MAX];
-    if (!url_decode_component(fp, decoded, sizeof(decoded))) {
-        return send_error_response(req, 404, "not found");
-    }
-    if (!decoded[0] || strstr(decoded, "..") || strchr(decoded, '/') || strchr(decoded, '\\')) {
-        return send_error_response(req, 404, "not found");
-    }
-
-    char full[PATH_MAX];
-    if (snprintf(full, sizeof(full), "%s/%s", BASE_PATH, decoded) >= (int)sizeof(full)) {
-        return send_error_response(req, 404, "not found");
-    }
-    struct stat st;
-    if (stat(full, &st) != 0 || !S_ISREG(st.st_mode)) {
-        return send_error_response(req, 404, "not found");
-    }
-    return send_file_response(req, full);
-}
-
-static esp_err_t h_photos_display(httpd_req_t *req)
-{
-    char buf[256];
-    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (len <= 0) return send_error_response(req, 400, "no body");
-    buf[len] = 0;
-
-    cJSON *j = cJSON_Parse(buf);
-    if (!j) return send_error_response(req, 400, "bad json");
-
-    cJSON *name_j = cJSON_GetObjectItem(j, "name");
-    if (!cJSON_IsString(name_j) || !name_j->valuestring[0]) {
-        cJSON_Delete(j);
-        return send_error_response(req, 400, "name required");
-    }
-    const char *name = name_j->valuestring;
-
-    /* Path traversal protection */
-    if (strstr(name, "..") || strchr(name, '/') || strchr(name, '\\')) {
-        cJSON_Delete(j);
-        return send_error_response(req, 403, "invalid path");
-    }
-
-    /* Check whether the file exists */
-    char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", BASE_PATH, name);
-    struct stat st;
-    hal_storage_prepare_photo_fs_access();
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
-        cJSON_Delete(j);
-        return send_error_response(req, 404, "not found");
-    }
-
-    /* Call the local album to display the image */
-    photo_slideshow.displayPhotoByPath(path);
-
-    strlcpy(g_dev_state.current_image, name, sizeof(g_dev_state.current_image));
-
-    cJSON_Delete(j);
-
-    cJSON *r = cJSON_CreateObject();
-    cJSON_AddStringToObject(r, "status", "ok");
-    cJSON_AddStringToObject(r, "displaying", name);
-    send_json_response(req, r);
-    cJSON_Delete(r);
     return ESP_OK;
 }
 
@@ -1365,18 +748,12 @@ static const httpd_uri_t routes[] = {
     {"/api/wifi/status", HTTP_GET, h_wifi_status},
     {"/api/device/ready", HTTP_GET, h_device_ready},
     {"/api/wifi/disconnect", HTTP_POST, h_wifi_disconnect},
-    {"/api/photos/list", HTTP_GET, h_photos_list},
-    {"/api/photos/upload", HTTP_POST, h_photos_upload},
-    {"/api/photos/delete", HTTP_DELETE, h_photos_delete},
-    {"/api/storage", HTTP_GET, h_storage},
     {"/api/battery", HTTP_GET, h_battery},
     {"/api/mode/mode_1/config", HTTP_GET, h_mode_cfg_get},
     {"/api/mode/mode_1/config", HTTP_POST, h_mode_cfg_set},
     {"/api/mode/mode_2/config", HTTP_GET, h_mode2_cfg_get},
     {"/api/mode/mode_2/config", HTTP_POST, h_mode_cfg_set},
     {"/api/mode/switch", HTTP_POST, h_mode_switch},
-    {"/data/*", HTTP_GET, h_data_serve},
-    {"/api/photos/display", HTTP_POST, h_photos_display},
     {"/api/system/reset", HTTP_POST, h_system_reset},
     {"/", HTTP_GET, h_static_serve},
 
@@ -1384,12 +761,6 @@ static const httpd_uri_t routes[] = {
 
 esp_err_t app_server_init(void)
 {
-    // Initialize device state from persisted settings
-    strlcpy(g_dev_state.current_mode, hal.settings.current_mode, sizeof(g_dev_state.current_mode));
-    if (hal.settings.current_mode[0]) {
-        strlcpy(g_dev_state.requested_mode, hal.settings.current_mode, sizeof(g_dev_state.requested_mode));
-    }
-
     /* WiFi events — additional listener, does not own the WiFi lifecycle. */
     WiFi.onEvent([](WiFiEvent ev, void *data) {
         switch (ev) {
@@ -1487,16 +858,6 @@ esp_err_t app_server_stop(void)
     return ESP_OK;
 }
 
-void app_server_sync_mode(const char *mode_id)
-{
-    strlcpy(g_dev_state.current_mode, mode_id, sizeof(g_dev_state.current_mode));
-    if (mode_id && mode_id[0]) {
-        strlcpy(g_dev_state.requested_mode, mode_id, sizeof(g_dev_state.requested_mode));
-    } else {
-        g_dev_state.requested_mode[0] = 0;
-    }
-}
-
 device_state_t app_server_get_state(void)
 {
     device_state_t s = {};
@@ -1513,12 +874,3 @@ device_state_t app_server_get_state(void)
     return s;
 }
 
-mode1_config_t app_server_get_mode1_config(void)
-{
-    mode1_config_t c;
-    strlcpy(c.orientation, hal.settings.rotation == 0 ? "landscape" : "portrait", sizeof(c.orientation));
-    c.auto_slideshow   = hal.settings.auto_slideshow;
-    c.interval_minutes = hal.settings.interval_minutes;
-    c.low_power_mode   = hal.settings.low_power_mode;
-    return c;
-}

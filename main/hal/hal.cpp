@@ -148,18 +148,6 @@ bool is_supported_mode_id(const char* mode_id)
     return mode_id && (cstring_compare(mode_id, MODE_ID_LOCAL) == 0 || cstring_compare(mode_id, MODE_ID_EZDATA) == 0);
 }
 
-AppMode app_mode_from_mode_id(const char* mode_id)
-{
-    if (!mode_id || !mode_id[0]) return APP_MODE_NONE;
-    return (cstring_compare(mode_id, MODE_ID_EZDATA) == 0) ? APP_MODE_EZDATA : APP_MODE_LOCAL;
-}
-
-const char* mode_id_from_app_mode(AppMode mode)
-{
-    if (mode == APP_MODE_NONE) return "";
-    return mode == APP_MODE_EZDATA ? MODE_ID_EZDATA : MODE_ID_LOCAL;
-}
-
 void Hal::init()
 {
     esp_reset_reason_t reason = esp_reset_reason();
@@ -275,20 +263,14 @@ void Hal::settingsInit()
 
     // Defaults (first boot / garbage NVS)
     memset(&settings, 0, sizeof(settings));
-    settings.rotation         = 1;
-    settings.auto_slideshow   = false;
-    settings.interval_minutes = 60;
-    settings.boot_sound       = true;
-    settings.low_power_mode   = false;
-    cstring_copy(settings.current_mode, "", sizeof(settings.current_mode));
+    settings.rotation       = 1;
+    settings.boot_sound     = true;
+    settings.low_power_mode = false;
     cstring_copy(settings.device_name, "papercolor", sizeof(settings.device_name));
 
-    bool mode_changed        = false;
     bool device_name_changed = false;
-    bool has_nvs             = false;
     nvs_handle_t nvs_handle;
     if (nvs_open("papercolor", NVS_READONLY, &nvs_handle) == ESP_OK) {
-        has_nvs = true;
         size_t value_size;
 
         value_size = sizeof(settings.wifi_ssid);
@@ -300,22 +282,8 @@ void Hal::settingsInit()
         uint8_t value_u8;
         if (nvs_get_u8(nvs_handle, "rotation", &value_u8) == ESP_OK && value_u8 <= 1) settings.rotation = value_u8;
 
-        if (nvs_get_u8(nvs_handle, "auto_slide", &value_u8) == ESP_OK) settings.auto_slideshow = (value_u8 != 0);
-
         if (nvs_get_u8(nvs_handle, "boot_sound", &value_u8) == ESP_OK) settings.boot_sound = (value_u8 != 0);
         if (nvs_get_u8(nvs_handle, "low_power", &value_u8) == ESP_OK) settings.low_power_mode = (value_u8 != 0);
-
-        uint16_t value_u16;
-        if (nvs_get_u16(nvs_handle, "interval", &value_u16) == ESP_OK && value_u16 >= 1 && value_u16 <= 255)
-            settings.interval_minutes = (int)value_u16;
-
-        value_size         = sizeof(settings.current_mode);
-        esp_err_t mode_err = nvs_get_str(nvs_handle, "cur_mode", settings.current_mode, &value_size);
-        if (mode_err == ESP_OK) {
-            char normalized_mode[sizeof(settings.current_mode)];
-            mode_changed = normalize_mode_id(settings.current_mode, normalized_mode, sizeof(normalized_mode));
-            cstring_copy(settings.current_mode, normalized_mode, sizeof(settings.current_mode));
-        }
 
         value_size = sizeof(settings.device_name);
         if (nvs_get_str(nvs_handle, "device_name", settings.device_name, &value_size) == ESP_OK) {
@@ -328,21 +296,11 @@ void Hal::settingsInit()
         nvs_close(nvs_handle);
     }
 
-    if (!has_nvs) {
-        char normalized_mode[sizeof(settings.current_mode)];
-        mode_changed = normalize_mode_id(settings.current_mode, normalized_mode, sizeof(normalized_mode));
-        cstring_copy(settings.current_mode, normalized_mode, sizeof(settings.current_mode));
-    }
-
     {
         char normalized_device_name[sizeof(settings.device_name)];
         device_name_changed =
             normalize_device_name(settings.device_name, normalized_device_name, sizeof(normalized_device_name));
         cstring_copy(settings.device_name, normalized_device_name, sizeof(settings.device_name));
-    }
-
-    if (mode_changed) {
-        settingsSave(SETTING_CURRENT_MODE);
     }
 
     if (device_name_changed) {
@@ -351,8 +309,8 @@ void Hal::settingsInit()
 
     Canvas->setRotation(settings.rotation);
 
-    ESP_LOGI(TAG, "Settings loaded: rot=%d, slide=%d, interval=%d, mode=%s, boot_sound=%d", settings.rotation,
-             settings.auto_slideshow, settings.interval_minutes, settings.current_mode, settings.boot_sound ? 1 : 0);
+    ESP_LOGI(TAG, "Settings loaded: rot=%d, boot_sound=%d, low_power=%d", settings.rotation,
+             settings.boot_sound ? 1 : 0, settings.low_power_mode ? 1 : 0);
 }
 
 void Hal::settingsSave(SettingKey key)
@@ -386,35 +344,6 @@ void Hal::settingsSave(SettingKey key)
             uint8_t v;
             if (nvs_get_u8(h, "rotation", &v) != ESP_OK || v != settings.rotation) {
                 nvs_set_u8(h, "rotation", settings.rotation);
-                changed = true;
-            }
-            break;
-        }
-        case SETTING_AUTO_SLIDESHOW: {
-            uint8_t v;
-            if (nvs_get_u8(h, "auto_slide", &v) != ESP_OK || (v != 0) != settings.auto_slideshow) {
-                nvs_set_u8(h, "auto_slide", settings.auto_slideshow ? 1 : 0);
-                changed = true;
-            }
-            break;
-        }
-        case SETTING_INTERVAL: {
-            uint16_t v;
-            if (nvs_get_u16(h, "interval", &v) != ESP_OK || v != (uint16_t)settings.interval_minutes) {
-                nvs_set_u16(h, "interval", (uint16_t)settings.interval_minutes);
-                changed = true;
-            }
-            break;
-        }
-        case SETTING_CURRENT_MODE: {
-            char normalized_mode[sizeof(settings.current_mode)];
-            normalize_mode_id(settings.current_mode, normalized_mode, sizeof(normalized_mode));
-            cstring_copy(settings.current_mode, normalized_mode, sizeof(settings.current_mode));
-
-            char prev[16] = {};
-            size_t sz     = sizeof(prev);
-            if (nvs_get_str(h, "cur_mode", prev, &sz) != ESP_OK || cstring_compare(prev, settings.current_mode) != 0) {
-                nvs_set_str(h, "cur_mode", settings.current_mode);
                 changed = true;
             }
             break;

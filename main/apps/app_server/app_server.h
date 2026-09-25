@@ -33,15 +33,6 @@ typedef struct {
     char conn_err[32];
 } device_state_t;
 
-/**
- * @brief Stores the slideshow mode configuration reported by the web UI.
- */
-typedef struct {
-    char orientation[16];
-    bool auto_slideshow;
-    int interval_minutes;
-    bool low_power_mode;
-} mode1_config_t;
 
 /**
  * @brief Starts the HTTP server and related background services.
@@ -61,12 +52,6 @@ esp_err_t app_server_init(void);
  */
 esp_err_t app_server_stop(void);
 
-/**
- * @brief Synchronizes the server-side mode state with the active mode.
- *
- * @param mode_id Mode identifier to publish to the web layer.
- */
-void app_server_sync_mode(const char* mode_id);
 
 /**
  * @brief Returns the latest device state snapshot.
@@ -75,12 +60,6 @@ void app_server_sync_mode(const char* mode_id);
  */
 device_state_t app_server_get_state(void);
 
-/**
- * @brief Returns the current slideshow mode configuration.
- *
- * @return Current mode configuration.
- */
-mode1_config_t app_server_get_mode1_config(void);
 
 #ifdef __cplusplus
 }
