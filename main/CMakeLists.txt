@@ -12,6 +12,9 @@ idf_component_register(
         "hal/utils/image/image_utils.cpp"
         "hal/utils/audio/audio.cpp"
         "hal/utils/dns_server/dns_server.c"
+        "cal/cal_model.c"
+        "cal/cal_store.cpp"
+        "cal/cal_fetch.cpp"
     INCLUDE_DIRS
         "."
         "hal/utils/audio"
@@ -32,6 +35,7 @@ idf_component_register(
         tinyusb
         esp_http_client
         esp-tls
+        mbedtls
 
 )
 

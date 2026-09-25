@@ -187,6 +187,16 @@ static void calendar_show(int day_offset)
     app_manager_mark_activity();
 }
 
+// Window edge is a hard stop, not a wrap: an offset with no stored day is refused, no re-render.
+static void calendar_walk(int day_offset)
+{
+    if (app_calendar_day_stored(day_offset)) {
+        calendar_show(day_offset);
+    } else {
+        ESP_LOGI(g_tag, "offset %d is outside the stored window, refused", day_offset);
+    }
+}
+
 static void calendar_cycle()
 {
     g_day_offset = 0;
@@ -338,7 +348,7 @@ void app_manager_factory_reset_machine()
     memset(&hal.settings, 0, sizeof(hal.settings));
     hal.settings.rotation       = 1;
     hal.settings.boot_sound     = true;
-    hal.settings.low_power_mode = false;
+    hal.settings.low_power_mode = true;  // calendar: default on, upstream is off (board would never power off)
     cstring_copy(hal.settings.device_name, "papercolor", sizeof(hal.settings.device_name));
     hal.settingsUnlock();
 
@@ -442,11 +452,10 @@ static void app_task(void* param)
         // ==================== Calendar verbs ====================
         // A click = previous day, C click = next day, B click = today, B hold >= 1.5 s = fetch now.
         // A's 5 s hold (portal, above) is never a click: a release after the hold threshold is not one.
-        // ponytail: no window-edge clamp yet; it needs the stored window from main/cal.
         if (M5.BtnA.wasClicked()) {
-            calendar_show(g_day_offset - 1);
+            calendar_walk(g_day_offset - 1);
         } else if (M5.BtnC.wasClicked()) {
-            calendar_show(g_day_offset + 1);
+            calendar_walk(g_day_offset + 1);
         } else if (M5.BtnB.wasClicked()) {
             calendar_show(0);
         } else if (M5.BtnB.wasHold()) {

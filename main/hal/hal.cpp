@@ -276,7 +276,7 @@ void Hal::settingsInit()
     memset(&settings, 0, sizeof(settings));
     settings.rotation       = 1;
     settings.boot_sound     = true;
-    settings.low_power_mode = false;
+    settings.low_power_mode = true;  // calendar: default on, upstream is off (board would never power off)
     cstring_copy(settings.device_name, "papercolor", sizeof(settings.device_name));
 
     bool device_name_changed = false;
