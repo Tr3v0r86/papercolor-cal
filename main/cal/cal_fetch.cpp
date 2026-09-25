@@ -44,7 +44,7 @@ esp_err_t cal_fetch(const char *url, char *buf, size_t cap, size_t *out_len)
     cfg.url = full;
     cfg.event_handler = on_event;
     cfg.user_data = &sink;
-    cfg.timeout_ms = 20000;                    // per network operation, not the whole fetch
+    cfg.timeout_ms = 45000;                    // per network operation; a cold Apps Script took 16.5 s live (2026-09-25)
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.disable_auto_redirect = false;
     cfg.max_redirection_count = 5;
