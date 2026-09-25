@@ -476,13 +476,21 @@ static void fetch_into_store()
     heap_caps_free(w);
 }
 
-void app_calendar_daily_cycle(void)
+void app_calendar_daily_cycle(int day_offset)
 {
     // Budget: Wi-Fi 15 s + SNTP 10 s + fetch (20 s per network operation) keeps a normal run under 60 s.
     const int64_t t0 = esp_timer_get_time();
-    bool online      = hal.settings.wifi_ssid[0] &&
-                  (WiFi.isConnected() ||
-                   WiFi.connect(hal.settings.wifi_ssid, hal.settings.wifi_password, 15000) == ESP_OK);
+    // The vendor Wi-Fi manager reports FAIL on the first STA disconnect and never retries, and the
+    // first auth right after a cold boot bounced on the 2026-09-26 wake test (auth -> init in 1 s).
+    // Three attempts, one second apart, before giving up on this wake.
+    bool online = hal.settings.wifi_ssid[0] && WiFi.isConnected();
+    for (int attempt = 1; !online && hal.settings.wifi_ssid[0] && attempt <= 3; attempt++) {
+        online = WiFi.connect(hal.settings.wifi_ssid, hal.settings.wifi_password, 15000) == ESP_OK;
+        if (!online) {
+            ESP_LOGW(TAG, "wifi: join attempt %d failed", attempt);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
     if (online) {
         hal.syncRtcFromSntp(10000);
         fetch_into_store();
@@ -491,5 +499,6 @@ void app_calendar_daily_cycle(void)
                  hal.settings.wifi_ssid[0] ? "join failed" : "no SSID configured");
     }
     ESP_LOGI(TAG, "network steps took %lld ms", (long long)((esp_timer_get_time() - t0) / 1000));
-    app_calendar_render(0);
+    if (!app_calendar_day_stored(day_offset)) day_offset = 0;
+    app_calendar_render(day_offset);
 }

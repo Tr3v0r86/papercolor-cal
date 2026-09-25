@@ -103,6 +103,8 @@ public:
     bool configureRtcWakePin();
     /** @brief Arms the RTC alarm for the next hour:minute local (Asia/Bangkok) after now. */
     bool scheduleNextWakeAt(int hour, int minute);
+    /** Test hook: alarm `minutes` from the RTC's now. Used only by TEST_WAKE_IN_MIN builds. */
+    bool scheduleNextWakeInMinutes(int minutes);
     /** @brief Needs STA up. Sets the RTC to Asia/Bangkok local time from SNTP. */
     bool syncRtcFromSntp(uint32_t timeout_ms);
     /** @brief Clears wake-related flags. */

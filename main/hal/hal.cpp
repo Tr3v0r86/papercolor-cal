@@ -234,6 +234,18 @@ bool Hal::scheduleNextWakeAt(int hour, int minute)
     return M5.Rtc.setAlarmIRQ(&next) > 0;
 }
 
+bool Hal::scheduleNextWakeInMinutes(int minutes)
+{
+    m5::rtc_datetime_t now;
+    if (!M5.Rtc.getDateTime(&now)) return false;
+    struct tm t = now.get_tm();
+    t.tm_min += minutes;
+    if (mktime(&t) < 0) return false;   // normalises minute/hour/day overflow
+    ESP_LOGI(TAG, "TEST next RTC wake %04d-%02d-%02d %02d:%02d local (+%d min)", t.tm_year + 1900, t.tm_mon + 1,
+             t.tm_mday, t.tm_hour, t.tm_min, minutes);
+    return M5.Rtc.setAlarmIRQ(&t) > 0;
+}
+
 bool Hal::syncRtcFromSntp(uint32_t timeout_ms)
 {
     esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");

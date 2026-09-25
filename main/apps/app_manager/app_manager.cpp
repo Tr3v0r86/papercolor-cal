@@ -120,7 +120,12 @@ static bool prepare_next_low_power_wake()
         ESP_LOGW(g_tag, "Failed to configure RTC wake pin");
         return false;
     }
+#if defined(TEST_WAKE_IN_MIN) && TEST_WAKE_IN_MIN > 0
+    // Wake-path test build: EXTRA_CXXFLAGS=-DTEST_WAKE_IN_MIN=3 idf.py reconfigure build. Never ship.
+    if (!hal.scheduleNextWakeInMinutes(TEST_WAKE_IN_MIN)) {
+#else
     if (!hal.scheduleNextWakeAt(DAILY_WAKE_HOUR, DAILY_WAKE_MINUTE)) {
+#endif
         ESP_LOGW(g_tag, "Failed to schedule next RTC wake");
         return false;
     }
@@ -178,11 +183,23 @@ static bool should_idle_power_off_in_low_power_mode()
     return now - g_low_power_last_activity_ms >= LOW_POWER_IDLE_SHUTDOWN_MS;
 }
 
+// Dim white while the board is busy (a press was accepted, or it is booting/fetching), off when the
+// refresh has reached the glass. Trevor, 2026-09-26: "button presses should give LED feedback so I
+// know it's powered on". This is the only LED use in the firmware; the vendor status task is gone.
+static void led_busy(bool on)
+{
+    M5.Led.setBrightness(on ? 25 : 0);
+    M5.Led.setAllColor(255, 255, 255);
+    M5.Led.display();
+}
+
 static void calendar_show(int day_offset)
 {
     g_day_offset = day_offset;
     app_manager_set_refresh_in_progress(true);
+    led_busy(true);
     app_calendar_render(g_day_offset);
+    led_busy(false);
     app_manager_set_refresh_in_progress(false);
     app_manager_mark_activity();
 }
@@ -197,11 +214,14 @@ static void calendar_walk(int day_offset)
     }
 }
 
+// Refetch keeps the day being looked at (Trevor, 2026-09-26); the cycle itself falls back to today
+// only if the refreshed window no longer holds it.
 static void calendar_cycle()
 {
-    g_day_offset = 0;
     app_manager_set_refresh_in_progress(true);
-    app_calendar_daily_cycle();
+    led_busy(true);
+    app_calendar_daily_cycle(g_day_offset);
+    led_busy(false);
     app_manager_set_refresh_in_progress(false);
     app_manager_mark_activity();
 }
@@ -450,15 +470,16 @@ static void app_task(void* param)
         }
 
         // ==================== Calendar verbs ====================
-        // A click = previous day, C click = next day, B click = today, B hold >= 1.5 s = fetch now.
-        // A's 5 s hold (portal, above) is never a click: a release after the hold threshold is not one.
+        // Physical order on the unit (Trevor, 2026-09-26): C is the top button, A and B are the two
+        // side buttons with A above B. A click = day back, B click = day forward, C click = refetch
+        // the calendar and stay on the day being looked at. Every power-on and the 04:00 wake show
+        // today again. A's 5 s hold (portal, above) is never a click: a release after the hold
+        // threshold is not one.
         if (M5.BtnA.wasClicked()) {
             calendar_walk(g_day_offset - 1);
-        } else if (M5.BtnC.wasClicked()) {
-            calendar_walk(g_day_offset + 1);
         } else if (M5.BtnB.wasClicked()) {
-            calendar_show(0);
-        } else if (M5.BtnB.wasHold()) {
+            calendar_walk(g_day_offset + 1);
+        } else if (M5.BtnC.wasClicked()) {
             calendar_cycle();
         }
 
@@ -539,7 +560,9 @@ esp_err_t app_manager_start()
     M5.BtnC.setHoldThresh(BUTTON_LONG_PRESS_MS);
 
     if (hal.isRtcWakeBoot()) {
-        app_calendar_daily_cycle();
+        led_busy(true);
+        app_calendar_daily_cycle(0);
+        led_busy(false);
         shutdown_after_low_power_cycle();  // returns only if low-power mode is off; fall through to idle
     }
 
