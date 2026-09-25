@@ -56,6 +56,12 @@ e. **What to check on glass.**
    5. The 04:00 wake next morning: the board powers itself on around 04:00, fetches, renders
       and powers off; the footer then reads `UPDATED <that day> 04:00` on white.
 
+
+> **Stale-build trap:** `app_calendar.cpp` includes `secrets.h` through `__has_include`. If you create
+> or change `main/secrets.h` after a build, ninja does not know the object depends on it. Run
+> `touch main/apps/calendar/app_calendar.cpp` (or `idf.py fullclean`) before `idf.py build`, then confirm
+> with `strings -n 20 build/paper_color.bin | grep -c script.google.com`. Bitten live 2026-09-25.
+
 ## Serial monitor
 
 ```bash
