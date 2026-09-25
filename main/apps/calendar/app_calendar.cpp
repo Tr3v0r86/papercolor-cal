@@ -487,10 +487,13 @@ void app_calendar_daily_cycle(int day_offset)
              (unsigned)strlen(hal.settings.wifi_password), (int)WiFi.getMode());
     bool online = hal.settings.wifi_ssid[0] && WiFi.isConnected();
     for (int attempt = 1; !online && hal.settings.wifi_ssid[0] && attempt <= 3; attempt++) {
+        // The vendor portal's recipe (app_server perform_wifi_connect): disconnect, settle, connect.
+        WiFi.disconnect();
+        vTaskDelay(pdMS_TO_TICKS(200));
         online = WiFi.connect(hal.settings.wifi_ssid, hal.settings.wifi_password, 15000) == ESP_OK;
         if (!online) {
             ESP_LOGW(TAG, "wifi: join attempt %d failed", attempt);
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            vTaskDelay(pdMS_TO_TICKS(5000));   // give an AP still holding the old association time to drop it
         }
     }
     if (online) {

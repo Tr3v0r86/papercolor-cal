@@ -233,6 +233,12 @@ static void shutdown_after_low_power_cycle()
         return;
     }
 
+    // Leave the AP cleanly. Cutting power mid-association left the router holding this STA, and the
+    // next wake's auth went unanswered (reason 2 AUTH_EXPIRE, 2026-09-26 05:17 wake test).
+    if (WiFi.isConnected()) {
+        WiFi.disconnect();
+        vTaskDelay(pdMS_TO_TICKS(300));
+    }
     hal.clearWakeFlags();
     vTaskDelay(pdMS_TO_TICKS(50));
     hal.powerOff();
