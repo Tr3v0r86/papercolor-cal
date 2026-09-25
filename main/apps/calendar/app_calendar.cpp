@@ -483,6 +483,8 @@ void app_calendar_daily_cycle(int day_offset)
     // The vendor Wi-Fi manager reports FAIL on the first STA disconnect and never retries, and the
     // first auth right after a cold boot bounced on the 2026-09-26 wake test (auth -> init in 1 s).
     // Three attempts, one second apart, before giving up on this wake.
+    ESP_LOGI(TAG, "wifi: ssid '%s', password length %u, mode %d", hal.settings.wifi_ssid,
+             (unsigned)strlen(hal.settings.wifi_password), (int)WiFi.getMode());
     bool online = hal.settings.wifi_ssid[0] && WiFi.isConnected();
     for (int attempt = 1; !online && hal.settings.wifi_ssid[0] && attempt <= 3; attempt++) {
         online = WiFi.connect(hal.settings.wifi_ssid, hal.settings.wifi_password, 15000) == ESP_OK;

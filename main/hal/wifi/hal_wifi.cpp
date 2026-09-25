@@ -139,7 +139,7 @@ void WiFiManager::eventHandler(esp_event_base_t base, int32_t id, void* data)
                 fireEvent(WiFiEvent::STA_CONNECTED, data);
                 break;
             case WIFI_EVENT_STA_DISCONNECTED: {
-                ESP_LOGD(TAG, "STA_DISCONNECTED");
+                ESP_LOGW(TAG, "STA_DISCONNECTED reason %d", (int)static_cast<wifi_event_sta_disconnected_t*>(data)->reason);
                 _sta_connected = false;
                 _sta_got_ip    = false;
                 xEventGroupSetBits(_event_group, BIT_FAIL);

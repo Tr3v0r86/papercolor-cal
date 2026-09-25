@@ -560,6 +560,12 @@ esp_err_t app_manager_start()
     M5.BtnC.setHoldThresh(BUTTON_LONG_PRESS_MS);
 
     if (hal.isRtcWakeBoot()) {
+        // Same radio bring-up as a button boot. The only STA join that has ever succeeded on this
+        // unit ran from APSTA with the softAP up (2026-09-26 wake test: STA-only bounced auth->init
+        // in 1 s, three times). If APSTA is what makes it work, that is the fix; the reason code
+        // logged by hal_wifi says which.
+        ESP_ERROR_CHECK(WiFi.begin());
+        ESP_ERROR_CHECK(ensure_apsta_started());
         led_busy(true);
         app_calendar_daily_cycle(0);
         led_busy(false);
